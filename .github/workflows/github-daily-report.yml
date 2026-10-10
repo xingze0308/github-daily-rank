@@ -1,0 +1,38 @@
+name: GitHub Star Daily Report
+
+on:
+  schedule:
+    # UTC 00:30 = 北京时间 08:30
+    - cron: "30 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Verify FEISHU_WEBHOOK_URL secret
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+        run: |
+          if [ -z "$FEISHU_WEBHOOK_URL" ]; then
+            echo "::error::Secret FEISHU_WEBHOOK_URL is not set. Add it under Settings -> Secrets and variables -> Actions, otherwise the report will not be delivered."
+            exit 1
+          fi
+
+      - name: Generate and send report
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+        run: python scripts/github_daily_report.py
