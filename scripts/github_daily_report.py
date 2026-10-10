@@ -16,6 +16,8 @@ from typing import Any
 DEFAULT_ENDPOINT = "https://discoverhub.cn/trend/github/rank/2"
 DEFAULT_STAR_LOWER = 1
 DEFAULT_STAR_UPPER = 500
+DEFAULT_API_BASE = "https://open.feishu.cn"
+CARD_HEADER_TEMPLATE = "blue"
 
 DESCRIPTION_TRANSLATIONS = {
     "morluto/rea": "利用智能代理进行逆向工程分析，覆盖应用行为和原生二进制程序。",
@@ -109,7 +111,7 @@ def one_line_description(repository: dict[str, Any]) -> str:
     return description or "暂无简介"
 
 
-def build_report(repositories: list[dict[str, Any]], report_date: str, top_n: int = 10) -> str:
+def rank_repositories(repositories: list[dict[str, Any]], top_n: int) -> list[dict[str, Any]]:
     ranked = sorted(
         repositories,
         key=lambda repository: int(repository.get("daily_stars_incr") or 0),
@@ -117,16 +119,26 @@ def build_report(repositories: list[dict[str, Any]], report_date: str, top_n: in
     )[:top_n]
     if not ranked:
         raise ValueError("No repositories were returned by DiscoverHub")
+    return ranked
 
+
+def repository_line(repository: dict[str, Any]) -> str:
+    stars = format_stars(repository.get("currentStarNum"))
+    increase = repository.get("daily_stars_incr", 0)
+    return f"⭐ 总 Star：{stars}｜今日新增：{increase}"
+
+
+def build_report(repositories: list[dict[str, Any]], report_date: str, top_n: int = 10) -> str:
+    ranked = rank_repositories(repositories, top_n)
     best = ranked[0]
     lines = [
         f"# GitHub 开源日报｜{report_date}",
         "",
         f"🏆 今日榜首：[{repo_name(best)}]({best.get('url', '')})",
         f"一句话：{one_line_description(best)}",
-        f"⭐ 总 Star：{format_stars(best.get('currentStarNum'))}｜今日新增：{best.get('daily_stars_incr', 0)}",
+        repository_line(best),
         "",
-        "## 今日 Star 增长榜 TOP 10",
+        f"## 今日 Star 增长榜 TOP {top_n}",
         "",
     ]
 
@@ -135,7 +147,7 @@ def build_report(repositories: list[dict[str, Any]], report_date: str, top_n: in
             [
                 f"### {rank}. [{repo_name(repository)}]({repository.get('url', '')})",
                 f"一句话：{one_line_description(repository)}",
-                f"⭐ 总 Star：{format_stars(repository.get('currentStarNum'))}｜今日新增：{repository.get('daily_stars_incr', 0)}",
+                repository_line(repository),
                 "",
             ]
         )
@@ -143,18 +155,90 @@ def build_report(repositories: list[dict[str, Any]], report_date: str, top_n: in
     return "\n".join(lines)
 
 
-def send_to_feishu(webhook: str, report: str) -> None:
-    payload = json.dumps({"msg_type": "text", "content": {"text": report}}, ensure_ascii=False).encode()
+def build_card(repositories: list[dict[str, Any]], report_date: str, top_n: int = 10) -> dict[str, Any]:
+    """Build a Feishu interactive card for the daily ranking.
+
+    Feishu card markdown does not render ``#`` headings, so the hierarchy is
+    expressed with bold text and horizontal rules instead.
+    """
+    ranked = rank_repositories(repositories, top_n)
+    best = ranked[0]
+
+    summary = "\n".join(
+        [
+            f"**🏆 今日榜首：[{repo_name(best)}]({best.get('url', '')})**",
+            one_line_description(best),
+            repository_line(best),
+        ]
+    )
+
+    entries = [
+        "\n".join(
+            [
+                f"**{rank}. [{repo_name(repository)}]({repository.get('url', '')})**",
+                one_line_description(repository),
+                repository_line(repository),
+            ]
+        )
+        for rank, repository in enumerate(ranked, 1)
+    ]
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": CARD_HEADER_TEMPLATE,
+            "title": {"tag": "plain_text", "content": f"GitHub 开源日报｜{report_date}"},
+        },
+        "elements": [
+            {"tag": "markdown", "content": summary},
+            {"tag": "hr"},
+            {"tag": "markdown", "content": f"**今日 Star 增长榜 TOP {top_n}**"},
+            {"tag": "markdown", "content": "\n\n".join(entries)},
+        ],
+    }
+
+
+def _post_json(url: str, payload: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
+    request_headers = {"Content-Type": "application/json; charset=utf-8"}
+    if headers:
+        request_headers.update(headers)
     request = urllib.request.Request(
-        webhook,
-        data=payload,
-        headers={"Content-Type": "application/json"},
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers=request_headers,
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=30) as response:
-        result = json.load(response)
-    if result.get("code", 0) != 0:
-        raise RuntimeError(f"Feishu webhook failed: {result}")
+        return json.load(response)
+
+
+def get_tenant_access_token(api_base: str, app_id: str, app_secret: str) -> str:
+    payload = _post_json(
+        f"{api_base}/open-apis/auth/v3/tenant_access_token/internal",
+        {"app_id": app_id, "app_secret": app_secret},
+    )
+    if payload.get("code") != 0:
+        raise RuntimeError(f"Failed to obtain tenant_access_token: {payload}")
+    return str(payload["tenant_access_token"])
+
+
+def send_card(
+    api_base: str, app_id: str, app_secret: str, chat_id: str, card: dict[str, Any]
+) -> dict[str, Any]:
+    """Send an interactive card to a Feishu group through an app bot."""
+    token = get_tenant_access_token(api_base, app_id, app_secret)
+    payload = _post_json(
+        f"{api_base}/open-apis/im/v1/messages?receive_id_type=chat_id",
+        {
+            "receive_id": chat_id,
+            "msg_type": "interactive",
+            "content": json.dumps(card, ensure_ascii=False),
+        },
+        {"Authorization": f"Bearer {token}"},
+    )
+    if payload.get("code") != 0:
+        raise RuntimeError(f"Feishu send message failed: {payload}")
+    return payload
 
 
 def save_report(report: str, report_date: str, output_root: Path) -> Path:
@@ -169,12 +253,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", default=datetime.now().strftime("%Y.%m.%d"))
     parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
+    parser.add_argument("--api-base", default=os.environ.get("FEISHU_API_BASE", DEFAULT_API_BASE))
     parser.add_argument("--star-lower", type=int, default=DEFAULT_STAR_LOWER)
     parser.add_argument("--star-upper", type=int, default=DEFAULT_STAR_UPPER)
     parser.add_argument("--top", type=int, default=10)
     parser.add_argument("--output-root", type=Path, default=Path(__file__).resolve().parents[1])
-    parser.add_argument("--feishu-webhook", default=os.environ.get("FEISHU_WEBHOOK_URL"))
+    parser.add_argument("--app-id", default=os.environ.get("FEISHU_APP_ID"))
+    parser.add_argument("--app-secret", default=os.environ.get("FEISHU_APP_SECRET"))
+    parser.add_argument("--chat-id", default=os.environ.get("FEISHU_CHAT_ID"))
     parser.add_argument("--no-save", action="store_true")
+    parser.add_argument("--no-send", action="store_true")
     args = parser.parse_args()
 
     repositories = fetch_all_repositories(args.endpoint, args.star_lower, args.star_upper)
@@ -182,9 +270,25 @@ def main() -> None:
 
     if not args.no_save:
         print(f"日报已保存：{save_report(report, args.date, args.output_root)}")
-    if args.feishu_webhook:
-        send_to_feishu(args.feishu_webhook, report)
+
+    if args.no_send:
+        print("已跳过飞书推送")
+    else:
+        missing = [
+            name
+            for name, value in (
+                ("FEISHU_APP_ID", args.app_id),
+                ("FEISHU_APP_SECRET", args.app_secret),
+                ("FEISHU_CHAT_ID", args.chat_id),
+            )
+            if not value
+        ]
+        if missing:
+            raise SystemExit(f"缺少飞书配置，无法推送：{', '.join(missing)}")
+        card = build_card(repositories, args.date, args.top)
+        send_card(args.api_base, args.app_id, args.app_secret, args.chat_id, card)
         print("日报已发送到飞书群")
+
     print(report)
 
 

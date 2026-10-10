@@ -23,16 +23,26 @@ jobs:
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
 
-      - name: Verify FEISHU_WEBHOOK_URL secret
+      - name: Verify Feishu secrets
         env:
-          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}
         run: |
-          if [ -z "$FEISHU_WEBHOOK_URL" ]; then
-            echo "::error::Secret FEISHU_WEBHOOK_URL is not set. Add it under Settings -> Secrets and variables -> Actions, otherwise the report will not be delivered."
+          missing=""
+          for name in FEISHU_APP_ID FEISHU_APP_SECRET FEISHU_CHAT_ID; do
+            if [ -z "${!name}" ]; then
+              missing="$missing $name"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secret(s):$missing. Add them under Settings -> Secrets and variables -> Actions, otherwise the report will not be delivered."
             exit 1
           fi
 
       - name: Generate and send report
         env:
-          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}
         run: python scripts/github_daily_report.py
