@@ -439,8 +439,9 @@ def main() -> None:
         if missing:
             raise SystemExit(f"缺少飞书配置，无法推送：{', '.join(missing)}")
         card = build_card(repositories, args.date, args.top, cache)
-        send_card(args.api_base, args.app_id, args.app_secret, args.chat_id, card)
-        print("日报已发送到飞书群")
+        result = send_card(args.api_base, args.app_id, args.app_secret, args.chat_id, card)
+        message_id = (result.get("data") or {}).get("message_id", "unknown")
+        print(f"日报已发送到飞书群，message_id={message_id}")
 
     print(report)
 
