@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+DEFAULT_SOURCE_URL = "https://raw.githubusercontent.com/discoverhubgroup/product-daily-rank/main/README.md"
 DEFAULT_ENDPOINT = "https://discoverhub.cn/trend/github/rank/2"
 DEFAULT_STAR_LOWER = 1
 DEFAULT_STAR_UPPER = 500
@@ -61,6 +62,60 @@ TRANSLATE_PROMPT = """你是开源项目简介翻译助手。请把下面 JSON �
 
 def today_in_beijing() -> str:
     return datetime.now(BEIJING_TZ).strftime("%Y.%m.%d")
+
+
+def parse_product_report(document: str) -> tuple[str, str, list[dict[str, Any]]]:
+    """Join upstream ranking rows with product descriptions by GitHub URL."""
+    publication = re.search(r"^##\s+(\d{4}\.\d{2}\.\d{2})\s+最佳", document, re.MULTILINE)
+    statistics = re.search(r"(\d{4}\.\d{2}\.\d{2})\s+日榜排行", document)
+    if not publication or not statistics:
+        raise ValueError("上游日报缺少发布日期或榜单日期")
+    for date in (publication[1], statistics[1]):
+        datetime.strptime(date, "%Y.%m.%d")
+    descriptions = {}
+    for section in re.split(r"^##\s+\d+\.", document, flags=re.MULTILINE)[1:]:
+        address = re.search(r"\*\*Github地址\*\*：.*?\]\((https://github\.com/[^)]+)\)", section)
+        description = re.search(r"\*\*产品介绍\*\*：([^\n]+)", section)
+        if address and description:
+            descriptions[address[1].rstrip("/")] = description[1].strip()
+    rows = re.findall(
+        r"^\|\s*(\d+)\s*\|\s*\[([^\]]+)\]\((https://github\.com/[^)]+)\)\s*\|\s*([\d.,]+[kKmM]?)\s*\|\s*🔺?([\d,]+)\s*\|",
+        document, re.MULTILINE,
+    )
+    candidates = re.findall(r"^\|\s*\d+\s*\|.*$", document, re.MULTILINE)
+    if len(candidates) != len(rows):
+        raise ValueError("上游榜单存在无法解析的排名行")
+    if [int(row[0]) for row in rows] != list(range(1, len(rows) + 1)):
+        raise ValueError("上游榜单排名必须从 1 开始连续递增")
+    repositories = []
+    seen = set()
+    for _, name, url, stars, increase in rows:
+        url = url.rstrip("/")
+        if url in seen:
+            raise ValueError(f"上游榜单包含重复项目：{name}")
+        seen.add(url)
+        if url not in descriptions:
+            raise ValueError(f"上游榜单缺少项目介绍：{name}")
+        owner, repo = url.removeprefix("https://github.com/").split("/")
+        number = stars.replace(",", "").lower()
+        multiplier = 1000 if number.endswith("k") else 1000000 if number.endswith("m") else 1
+        repositories.append({
+            "owner": owner, "name": repo, "url": url,
+            "repoDetail": descriptions[url], "source_description": True,
+            "currentStarNum": round(float(number.rstrip("km")) * multiplier),
+            "daily_stars_incr": int(increase.replace(",", "")),
+        })
+    if not repositories:
+        raise ValueError("上游日报未解析到任何榜单项目")
+    return publication[1], statistics[1], repositories
+
+
+def fetch_product_report(source_url: str) -> tuple[str, str, list[dict[str, Any]]]:
+    result = subprocess.run(
+        ["curl", "--fail", "--silent", "--show-error", "--location", "--url", source_url],
+        check=True, capture_output=True, text=True, encoding="utf-8", timeout=30,
+    )
+    return parse_product_report(result.stdout)
 
 
 def fetch_page(endpoint: str, page: int, star_lower: int, star_upper: int) -> dict[str, Any]:
@@ -142,9 +197,11 @@ def one_line_description(
 ) -> str:
     """Resolve the Chinese one-liner.
 
-    Priority: hand-maintained mapping > translation cache > raw description > 暂无简介.
+    Priority: upstream product description > hand-maintained mapping > cache > raw text.
     """
     name = repo_name(repository)
+    if repository.get("source_description"):
+        return str(repository.get("repoDetail") or "暂无简介").strip()
     if name in DESCRIPTION_TRANSLATIONS:
         return DESCRIPTION_TRANSLATIONS[name]
     if translations and name in translations:
@@ -167,7 +224,7 @@ def rank_repositories(repositories: list[dict[str, Any]], top_n: int) -> list[di
 def repository_line(repository: dict[str, Any]) -> str:
     stars = format_stars(repository.get("currentStarNum"))
     increase = repository.get("daily_stars_incr", 0)
-    return f"⭐ 总 Star：{stars}｜今日新增：{increase}"
+    return f"⭐ 总 Star：{stars}｜日增 Star：{increase}"
 
 
 def build_report(
@@ -175,9 +232,11 @@ def build_report(
     report_date: str,
     top_n: int = 10,
     translations: dict[str, str] | None = None,
+    statistics_date: str | None = None,
 ) -> str:
     ranked = rank_repositories(repositories, top_n)
     best = ranked[0]
+    heading = f"{statistics_date or '今日'} Star 增长榜 TOP {len(ranked)}"
     lines = [
         f"# GitHub 开源日报｜{report_date}",
         "",
@@ -185,7 +244,7 @@ def build_report(
         f"一句话：{one_line_description(best, translations)}",
         repository_line(best),
         "",
-        f"## 今日 Star 增长榜 TOP {top_n}",
+        f"## {heading}",
         "",
     ]
 
@@ -207,6 +266,7 @@ def build_card(
     report_date: str,
     top_n: int = 10,
     translations: dict[str, str] | None = None,
+    statistics_date: str | None = None,
 ) -> dict[str, Any]:
     """Build a Feishu interactive card for the daily ranking.
 
@@ -215,6 +275,7 @@ def build_card(
     """
     ranked = rank_repositories(repositories, top_n)
     best = ranked[0]
+    heading = f"{statistics_date or '今日'} Star 增长榜 TOP {len(ranked)}"
 
     summary = "\n".join(
         [
@@ -244,7 +305,7 @@ def build_card(
         "elements": [
             {"tag": "markdown", "content": summary},
             {"tag": "hr"},
-            {"tag": "markdown", "content": f"**今日 Star 增长榜 TOP {top_n}**"},
+            {"tag": "markdown", "content": f"**{heading}**"},
             {"tag": "markdown", "content": "\n\n".join(entries)},
         ],
     }
@@ -375,8 +436,9 @@ def save_report(report: str, report_date: str, output_root: Path) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--date", default=today_in_beijing())
-    parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
+    parser.add_argument("--date", help="覆盖发布标题日期，默认使用上游发布日期")
+    parser.add_argument("--source-url", default=DEFAULT_SOURCE_URL)
+    parser.add_argument("--endpoint", help="显式使用旧版 DiscoverHub 接口")
     parser.add_argument("--api-base", default=os.environ.get("FEISHU_API_BASE", DEFAULT_API_BASE))
     parser.add_argument("--star-lower", type=int, default=DEFAULT_STAR_LOWER)
     parser.add_argument("--star-upper", type=int, default=DEFAULT_STAR_UPPER)
@@ -398,13 +460,21 @@ def main() -> None:
     parser.add_argument("--no-send", action="store_true")
     args = parser.parse_args()
 
-    repositories = fetch_all_repositories(args.endpoint, args.star_lower, args.star_upper)
+    statistics_date = None
+    if args.top < 1:
+        parser.error("--top 必须大于 0")
+    if args.endpoint:
+        repositories = fetch_all_repositories(args.endpoint, args.star_lower, args.star_upper)
+        report_date = args.date or today_in_beijing()
+    else:
+        publication_date, statistics_date, repositories = fetch_product_report(args.source_url)
+        report_date = args.date or publication_date
 
     # Only the repositories that actually make it into the report need a
     # Chinese one-liner, so translation is limited to the displayed TOP N.
     ranked = rank_repositories(repositories, args.top)
-    cache = load_description_cache(args.cache_path)
-    pending = collect_pending_translations(ranked, cache)
+    cache = load_description_cache(args.cache_path) if args.endpoint else {}
+    pending = collect_pending_translations(ranked, cache) if args.endpoint else {}
     if pending and args.translate_api_key:
         try:
             cache.update(
@@ -419,10 +489,10 @@ def main() -> None:
     elif pending:
         print(f"未配置 TRANSLATE_API_KEY，{len(pending)} 条简介将使用原文", file=sys.stderr)
 
-    report = build_report(repositories, args.date, args.top, cache)
+    report = build_report(repositories, report_date, args.top, cache, statistics_date)
 
     if not args.no_save:
-        print(f"日报已保存：{save_report(report, args.date, args.output_root)}")
+        print(f"日报已保存：{save_report(report, report_date, args.output_root)}")
 
     if args.no_send:
         print("已跳过飞书推送")
@@ -438,7 +508,7 @@ def main() -> None:
         ]
         if missing:
             raise SystemExit(f"缺少飞书配置，无法推送：{', '.join(missing)}")
-        card = build_card(repositories, args.date, args.top, cache)
+        card = build_card(repositories, report_date, args.top, cache, statistics_date)
         result = send_card(args.api_base, args.app_id, args.app_secret, args.chat_id, card)
         message_id = (result.get("data") or {}).get("message_id", "unknown")
         print(f"日报已发送到飞书群，message_id={message_id}")
