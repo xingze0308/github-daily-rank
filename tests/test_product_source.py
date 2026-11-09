@@ -65,3 +65,27 @@ class ProductSourceTests(unittest.TestCase):
         self.assertIn('2026.11.08 Star 增长榜 TOP 1', report)
         self.assertIn('2026.11.08 Star 增长榜 TOP 1', str(card))
         self.assertNotIn('今日新增', report)
+
+    def test_complete_details_survive_report_and_card(self):
+        extra = """![](https://example.com/image.png)
+- **产品分类**：[[开发工具](https://example.com/category)]
+- **产品外站**：[[github](https://github.com/acme/example)]
+- **Github数据**：star:**7.7k** watch:**23** fork:**375** pr:**3.9k** issue:**738** release:**153**
+- **近期趋势**：周增长: **894**⭐ (+9%) 月增长: **1.9k**⭐ (+23%)
+- **主要语言**：[Rust](https://example.com/rust)
+- **开源时间**：2025-10-18
+- **未来字段**：不能丢失
+"""
+        published, ranking, repos = parse_product_report(DOCUMENT + extra + "\n---\n## 更多Github开源项目\n广告尾部")
+        report = build_report(repos, published, statistics_date=ranking)
+        card_text = str(build_card(repos, published, statistics_date=ranking))
+        for line in extra.splitlines()[1:]:
+            self.assertIn(line, report)
+            self.assertIn(line, card_text)
+        for text in (report, card_text):
+            self.assertIn('示例:example 7.7k⭐', text)
+            self.assertIn('https://discoverhub.cn/product/detail/example', text)
+            self.assertIn('https://example.com/image.png', text)
+            self.assertNotIn('广告尾部', text)
+        self.assertIn('![](https://example.com/image.png)', report)
+        self.assertNotIn('![](', card_text)
