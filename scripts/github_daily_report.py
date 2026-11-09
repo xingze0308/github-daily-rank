@@ -73,11 +73,15 @@ def parse_product_report(document: str) -> tuple[str, str, list[dict[str, Any]]]
     for date in (publication[1], statistics[1]):
         datetime.strptime(date, "%Y.%m.%d")
     descriptions = {}
+    details = {}
     for section in re.split(r"^##\s+\d+\.", document, flags=re.MULTILINE)[1:]:
+        section = re.split(r"^\s*---+\s*$", section, maxsplit=1, flags=re.MULTILINE)[0].strip()
+        title, _, body = section.partition("\n")
         address = re.search(r"\*\*Github地址\*\*：.*?\]\((https://github\.com/[^)]+)\)", section)
         description = re.search(r"\*\*产品介绍\*\*：([^\n]+)", section)
         if address and description:
             descriptions[address[1].rstrip("/")] = description[1].strip()
+            details[address[1].rstrip("/")] = {"title": title.strip(), "body": body.strip()}
     rows = re.findall(
         r"^\|\s*(\d+)\s*\|\s*\[([^\]]+)\]\((https://github\.com/[^)]+)\)\s*\|\s*([\d.,]+[kKmM]?)\s*\|\s*🔺?([\d,]+)\s*\|",
         document, re.MULTILINE,
@@ -102,6 +106,7 @@ def parse_product_report(document: str) -> tuple[str, str, list[dict[str, Any]]]
         repositories.append({
             "owner": owner, "name": repo, "url": url,
             "repoDetail": descriptions[url], "source_description": True,
+            "product_details": details[url],
             "currentStarNum": round(float(number.rstrip("km")) * multiplier),
             "daily_stars_incr": int(increase.replace(",", "")),
         })
@@ -227,6 +232,18 @@ def repository_line(repository: dict[str, Any]) -> str:
     return f"⭐ 总 Star：{stars}｜日增 Star：{increase}"
 
 
+def repository_details(repository: dict[str, Any], translations: dict[str, str] | None = None) -> str:
+    details = repository.get("product_details")
+    if details:
+        return f"{details['body']}\n{repository_line(repository)}"
+    return f"一句话：{one_line_description(repository, translations)}\n{repository_line(repository)}"
+
+
+def repository_title(repository: dict[str, Any]) -> str:
+    details = repository.get("product_details")
+    return details["title"] if details else repo_name(repository)
+
+
 def build_report(
     repositories: list[dict[str, Any]],
     report_date: str,
@@ -251,9 +268,8 @@ def build_report(
     for rank, repository in enumerate(ranked, 1):
         lines.extend(
             [
-                f"### {rank}. [{repo_name(repository)}]({repository.get('url', '')})",
-                f"一句话：{one_line_description(repository, translations)}",
-                repository_line(repository),
+                f"### {rank}. [{repository_title(repository)}]({repository.get('url', '')})",
+                repository_details(repository, translations),
                 "",
             ]
         )
@@ -288,9 +304,8 @@ def build_card(
     entries = [
         "\n".join(
             [
-                f"**{rank}. [{repo_name(repository)}]({repository.get('url', '')})**",
-                one_line_description(repository, translations),
-                repository_line(repository),
+                f"**{rank}. [{repository_title(repository)}]({repository.get('url', '')})**",
+                re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"[图片：\1](\2)", repository_details(repository, translations)),
             ]
         )
         for rank, repository in enumerate(ranked, 1)
@@ -306,7 +321,7 @@ def build_card(
             {"tag": "markdown", "content": summary},
             {"tag": "hr"},
             {"tag": "markdown", "content": f"**{heading}**"},
-            {"tag": "markdown", "content": "\n\n".join(entries)},
+            *({"tag": "markdown", "content": entry} for entry in entries),
         ],
     }
 
