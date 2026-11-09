@@ -2,11 +2,8 @@ name: GitHub Star Daily Report
 
 on:
   schedule:
-    # UTC 23:37 = 北京时间 07:37
-    # GitHub 的 schedule 事件在高负载时会延迟（整点前后尤其严重），
-    # 故提前约 1 小时触发，并避开整点与半点，为调度延迟留出缓冲。
-    # 实测 2026-10-11 的 00:30 UTC 触发被延迟了 5 小时 35 分。
-    - cron: "37 23 * * *"
+    # UTC 00:37 = 北京时间 08:37，在上游标称 08:00 更新后抓取。
+    - cron: "37 0 * * *"
   workflow_dispatch:
 
 jobs:
@@ -48,9 +45,6 @@ jobs:
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
           FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}
-          TRANSLATE_API_BASE: ${{ vars.TRANSLATE_API_BASE }}
-          TRANSLATE_MODEL: ${{ vars.TRANSLATE_MODEL }}
-          TRANSLATE_API_KEY: ${{ secrets.TRANSLATE_API_KEY }}
         run: python scripts/github_daily_report.py
 
       - name: Commit report

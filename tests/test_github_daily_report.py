@@ -97,7 +97,7 @@ class GithubDailyReportTests(unittest.TestCase):
         self.assertIn("🏆 今日榜首：[acme/fast](https://github.com/acme/fast)", report)
         self.assertLess(report.index("acme/fast"), report.index("acme/slow"))
         self.assertIn("一句话：Fast project", report)
-        self.assertIn("⭐ 总 Star：200｜今日新增：50", report)
+        self.assertIn("⭐ 总 Star：200｜日增 Star：50", report)
         self.assertNotIn("数据来源", report)
         self.assertNotIn("上周增长", report)
 
@@ -119,7 +119,7 @@ class GithubDailyReportTests(unittest.TestCase):
         body = "\n".join(element.get("content", "") for element in card["elements"])
         self.assertIn("**🏆 今日榜首：[acme/fast](https://github.com/acme/fast)**", body)
         self.assertLess(body.index("acme/fast"), body.index("acme/slow"))
-        self.assertIn("⭐ 总 Star：200｜今日新增：50", body)
+        self.assertIn("⭐ 总 Star：200｜日增 Star：50", body)
         self.assertNotIn("数据来源", body)
         self.assertNotIn("# ", body)
 
@@ -168,7 +168,7 @@ class GithubDailyReportTests(unittest.TestCase):
         self.assertNotIn("open.feishu.cn/open-apis/bot", source)
 
     def test_main_fails_loudly_when_feishu_config_is_missing(self):
-        with patch("sys.argv", ["github_daily_report", "--no-save"]), patch(
+        with patch("sys.argv", ["github_daily_report", "--no-save", "--endpoint", "https://example.test/rank"]), patch(
             "scripts.github_daily_report.fetch_all_repositories", return_value=SAMPLE_REPOSITORIES
         ), patch.dict("os.environ", {}, clear=True):
             with self.assertRaises(SystemExit) as ctx:
@@ -235,7 +235,7 @@ class TranslationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch(
             "sys.argv",
             [
-                "github_daily_report", "--no-save", "--no-send",
+                "github_daily_report", "--no-save", "--no-send", "--endpoint", "https://example.test/rank",
                 "--cache-path", str(Path(tmp) / "cache.json"),
             ],
         ), patch(
