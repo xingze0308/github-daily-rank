@@ -473,6 +473,7 @@ def main() -> None:
     parser.add_argument("--translate-api-key", default=os.environ.get("TRANSLATE_API_KEY"))
     parser.add_argument("--no-save", action="store_true")
     parser.add_argument("--no-send", action="store_true")
+    parser.add_argument("--skip-sent", action="store_true", help="跳过已发送日报及尚未更新的上游日报")
     args = parser.parse_args()
 
     statistics_date = None
@@ -484,6 +485,16 @@ def main() -> None:
     else:
         publication_date, statistics_date, repositories = fetch_product_report(args.source_url)
         report_date = args.date or publication_date
+
+    report_day = datetime.strptime(report_date, "%Y.%m.%d")
+    sent_path = args.output_root / ".sent-reports" / f"{report_day:%Y%m%d}.json"
+    if args.skip_sent and not args.no_send:
+        if not args.endpoint and publication_date < today_in_beijing():
+            print(f"上游尚未更新：{publication_date}，等待备用触发")
+            return
+        if sent_path.exists():
+            print(f"{report_date} 日报已发送，跳过重复推送")
+            return
 
     # Only the repositories that actually make it into the report need a
     # Chinese one-liner, so translation is limited to the displayed TOP N.
@@ -526,6 +537,12 @@ def main() -> None:
         card = build_card(repositories, report_date, args.top, cache, statistics_date)
         result = send_card(args.api_base, args.app_id, args.app_secret, args.chat_id, card)
         message_id = (result.get("data") or {}).get("message_id", "unknown")
+        if args.skip_sent:
+            sent_path.parent.mkdir(parents=True, exist_ok=True)
+            sent_path.write_text(
+                json.dumps({"report_date": report_date, "message_id": message_id}, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
         print(f"日报已发送到飞书群，message_id={message_id}")
 
     print(report)
